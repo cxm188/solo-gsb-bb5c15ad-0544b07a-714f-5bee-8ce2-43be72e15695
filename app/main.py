@@ -29,6 +29,8 @@ from .changeover import (ChangeoverError, build_changeover_preview,
 from .parser import parse_recipe
 from .proportion import analyze_proportions
 from .recheck import build_recheck
+from .reformulation import (ReformulationError, build_reformulation_preview,
+                           get_source_context, list_reformulation_records)
 from .report import render_html_report, render_markdown_report
 from .review import analyze
 from .supplier_risk import SupplierPlanError, analyze_supplier_risk
@@ -106,6 +108,17 @@ class ChangeoverPreview(BaseModel):
 class TemplateGroupPreview(BaseModel):
     review_ids: List[int]
     max_extra: Dict[str, int] = Field(default_factory=dict)
+
+
+class ReformulationCostItem(BaseModel):
+    path: List[str]
+    cost: float
+
+
+class ReformulationPreview(BaseModel):
+    review_id: int
+    allergen: str
+    costs: List[ReformulationCostItem] = Field(default_factory=list)
 
 
 # ---------- 页面 ----------
@@ -304,6 +317,57 @@ def template_group_preview(payload: TemplateGroupPreview):
         return build_template_group_preview(
             payload.review_ids, payload.max_extra)
     except TemplateGroupError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": str(exc), "problems": exc.problems})
+
+
+# ---------- 目标过敏原最小改配方案（临时预览） ----------
+
+@app.get("/api/reformulation/records")
+def reformulation_records():
+    """最小改配方案候选记录清单。
+
+    每条历史审查记录给出当前配方（两版取标签核对对象，即新版配方 B）的
+    最终过敏原集合与参与资格；处于需复核状态的记录标记为禁止使用并附
+    原因。只读，不改写任何数据。
+    """
+    return {"records": list_reformulation_records()}
+
+
+@app.get("/api/reformulation/sources")
+def reformulation_sources(review_id: int, allergen: str):
+    """目标过敏原的全部来源路径与候选改配节点清单。
+
+    复用所选时效正常记录**当前配方树**（两版取 B / 新版，单版取 A /
+    现版）中该过敏原自身标注节点的完整路径，以及这些路径上的全部祖先
+    节点（供用户按完整节点路径填写改配成本）。记录缺失或需复核、过敏原
+    无来源时返回 400。只读，不改写任何审查记录。
+    """
+    try:
+        return get_source_context(review_id, allergen)
+    except ReformulationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": str(exc), "problems": exc.problems})
+
+
+@app.post("/api/reformulation-plan-preview")
+def reformulation_plan_preview(payload: ReformulationPreview):
+    """目标过敏原最小改配方案（临时预览）。
+
+    用户按完整节点路径填写可替换成本（未填写节点视为不可替换）；选择
+    祖先即同时阻断其子树全部来源、方案不再选其后代。后端用树形动态规划
+    求覆盖全部来源路径的最低总成本节点集合，总成本并列时按节点路径序列
+    字典序取最小并返回并列方案数；无解时列出仍不可覆盖的来源路径。记录
+    缺失或需复核时返回 400，``detail.problems`` 逐条给出原因。只读计算，
+    不改写任何审查记录。
+    """
+    try:
+        return build_reformulation_preview(
+            payload.review_id, payload.allergen,
+            [item.model_dump() for item in payload.costs])
+    except ReformulationError as exc:
         raise HTTPException(
             status_code=400,
             detail={"message": str(exc), "problems": exc.problems})

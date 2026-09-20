@@ -226,7 +226,7 @@
     （两版记录取标签核对对象，即新版配方）的<b>最终过敏原集合</b>；为涉及的每种过敏原配置
     清洁分钟数后，按「前一产品含有、后一产品不含」计算<b>有向换线成本</b>，以子集动态规划求
     <b>总清洁时间最短</b>的完整生产顺序（并列时按产品 ID 序列取最小）。处于「需复核」状态的
-    记录<b>禁止参与</b>（原因见列表），请先在「⑨ 历史审查记录」完成字典时效复核。
+    记录<b>禁止参与</b>（原因见列表），请先在「⑩ 历史审查记录」完成字典时效复核。
     本预览<b>不会</b>改写任何审查记录。</p>
   <div id="changeover-products"><p class="hint">加载中…</p></div>
   <div id="changeover-minutes-wrap" class="hidden">
@@ -247,7 +247,7 @@
     模板内容 = 组内产品过敏原<b>并集</b>，每个产品的<b>附加声明</b>为「模板含有而自身没有」的过敏原，
     仅当组内每个产品的附加声明数都不超过其上限时该组才成立。后端用<b>子集动态规划</b>求
     <b>模板数量最少</b>的完整分组，并列时按组内及组间产品 ID 序列取唯一最小者。缺失或
-    「需复核」记录<b>禁止参与</b>（原因见列表），请先在「⑨ 历史审查记录」完成字典时效复核。
+    「需复核」记录<b>禁止参与</b>（原因见列表），请先在「⑩ 历史审查记录」完成字典时效复核。
     本预览<b>不会</b>改写任何审查记录。</p>
   <div id="tpl-products"><p class="hint">加载中…</p></div>
   <div id="tpl-limits-wrap" class="hidden">
@@ -261,8 +261,44 @@
   <div id="tpl-result"></div>
 </section>
 
+<section>
+  <h2>⑧ 目标过敏原最小改配方案 <span class="pill gray">临时预览</span></h2>
+  <p class="hint">从历史审查记录中选择 <b>1 条时效正常</b>的记录与一个<b>目标过敏原</b>：
+    系统复用该记录<b>当前配方树</b>（两版取标签核对对象，即新版配方 B）列出该过敏原的
+    <b>全部来源路径</b>。请按<b>完整节点路径</b>为可替换节点填写改配成本——<b>未填写节点视为
+    不可替换</b>；选择祖先节点即同时阻断其子树内的全部来源，方案中不会再选其后代。
+    后端在配料树上做<b>树形动态规划</b>，求覆盖全部来源路径的<b>最低总成本</b>节点集合，
+    总成本并列时按节点路径序列字典序取最小并提示并列方案数；无解时列出仍不可覆盖的来源。
+    缺失或「需复核」记录<b>禁止使用</b>，请先在「⑩ 历史审查记录」完成字典时效复核。
+    本预览<b>不会</b>改写任何审查记录。</p>
+  <div class="row">
+    <div>
+      <label>历史记录（两版记录取新版配方 B）</label>
+      <select id="reform-record" style="width:100%;padding:8px 10px;border:1px solid #c9d1d9;border-radius:6px;font-size:14px"></select>
+    </div>
+    <div>
+      <label>目标过敏原</label>
+      <input type="text" id="reform-allergen" list="reform-allergen-list" placeholder="例如：乳">
+      <datalist id="reform-allergen-list"></datalist>
+    </div>
+  </div>
+  <div class="toolbar">
+    <button onclick="loadReformSources()">列出全部来源路径</button>
+    <span id="reform-msg" class="error"></span>
+  </div>
+  <div id="reform-sources"></div>
+  <div id="reform-costs-wrap" class="hidden">
+    <label>可替换节点改配成本（按完整节点路径填写；留空 = 该节点不可替换，成本需为不小于 0 的数字）</label>
+    <div id="reform-costs" class="minutes-grid"></div>
+  </div>
+  <div class="toolbar">
+    <button onclick="submitReformulation()">计算最小改配方案</button>
+  </div>
+  <div id="reform-result"></div>
+</section>
+
 <section id="result-section" class="hidden">
-  <h2>⑧ 审查结果 <span id="result-title" class="hint"></span></h2>
+  <h2>⑨ 审查结果 <span id="result-title" class="hint"></span></h2>
   <div id="recheck-bar"></div>
   <div id="recheck-panel" class="recheck-panel hidden"></div>
   <div id="result-body"></div>
@@ -273,7 +309,7 @@
 </section>
 
 <section>
-  <h2>⑨ 历史审查记录</h2>
+  <h2>⑩ 历史审查记录</h2>
   <div id="history-table"><p class="hint">暂无记录</p></div>
 </section>
 
@@ -584,6 +620,7 @@ async function loadHistory() {
     $('history-table').innerHTML = '<p class="hint">暂无记录</p>';
     await loadChangeoverProducts();  // 换线排程候选列表随记录变化一并刷新
     await loadTemplateProducts();    // 模板分组候选列表同步刷新
+    await loadReformRecords(Number($('reform-record').value) || null);
     return;
   }
   const rows = reviews.map(r => {
@@ -611,6 +648,7 @@ async function loadHistory() {
     `<table><tr><th>ID</th><th>名称</th><th>类型</th><th>结论</th><th>字典时效</th><th>时间</th><th>操作</th></tr>${rows}</table>`;
   await loadChangeoverProducts();  // 换线排程候选列表随记录 / 字典时效变化一并刷新
   await loadTemplateProducts();    // 模板分组候选列表同步刷新
+  await loadReformRecords(Number($('reform-record').value) || null);
 }
 
 async function viewReview(id) {
@@ -1285,6 +1323,177 @@ function renderTemplateResult(r) {
     <p class="hint">模板 = 组内产品过敏原并集；附加声明 = 模板含有而产品自身没有、需额外印上
       标签的过敏原（附加数不超过上限才可成组）。本结果仅为预览，未改写任何审查记录。</p></div>`;
   $('tpl-result').scrollIntoView({behavior: 'smooth'});
+}
+
+/* ---------- 目标过敏原最小改配方案（临时预览） ---------- */
+let reformRecords = [];
+let reformContext = null;    // 最近一次拉取的来源路径 / 候选节点
+let reformCosts = {};        // 路径 key（› 连接）-> 成本输入框当前值（跨渲染保留）
+
+async function loadReformRecords(preserveId) {
+  try {
+    const d = await api('/api/reformulation/records');
+    reformRecords = d.records;
+    renderReformRecords(preserveId);
+  } catch (e) {
+    $('reform-record').innerHTML = '';
+    $('reform-msg').textContent = '候选记录加载失败：' + e.message;
+  }
+}
+
+function renderReformRecords(preserveId) {
+  const sel = $('reform-record');
+  if (!reformRecords.length) {
+    sel.innerHTML = '<option value="">暂无历史审查记录，请先在「③ 新建标签审查」创建</option>';
+    return;
+  }
+  const stillExists = preserveId && reformRecords.some(r => r.id === preserveId);
+  const current = stillExists ? preserveId
+    : (Number(sel.value) || (reformRecords.find(r => r.eligible) || {}).id);
+  sel.innerHTML = reformRecords.map(r => {
+    if (!r.eligible) {
+      return `<option value="${r.id}" disabled>#${r.id} ${r.name}（${r.blocked_reason}）</option>`;
+    }
+    return `<option value="${r.id}">#${r.id} ${r.name}（${r.source_version}）</option>`;
+  }).join('');
+  if (current) sel.value = String(current);
+  const list = [...new Set(reformRecords.flatMap(r => r.allergens))].sort();
+  $('reform-allergen-list').innerHTML = list.map(a => `<option value="${esc(a)}">`).join('');
+}
+
+function selectedReformRecord() {
+  const id = Number($('reform-record').value);
+  return reformRecords.find(r => r.id === id) || null;
+}
+
+async function loadReformSources() {
+  $('reform-msg').textContent = '';
+  $('reform-result').innerHTML = '';
+  const rec = selectedReformRecord();
+  if (!rec) {
+    $('reform-msg').textContent = '请先选择 1 条时效正常的历史记录';
+    return;
+  }
+  const allergen = $('reform-allergen').value.trim();
+  if (!allergen) {
+    $('reform-msg').textContent = '请填写或选择目标过敏原';
+    return;
+  }
+  $('reform-sources').innerHTML = '<p class="hint">加载来源路径中…</p>';
+  $('reform-costs-wrap').classList.add('hidden');
+  $('reform-costs').innerHTML = '';
+  try {
+    reformContext = await api(
+      `/api/reformulation/sources?review_id=${rec.id}&allergen=${encodeURIComponent(allergen)}`);
+    renderReformSources();
+  } catch (e) {
+    reformContext = null;
+    $('reform-sources').innerHTML = '';
+    $('reform-msg').textContent = e.message;
+  }
+}
+
+function pathKey(path) { return path.join(' › '); }
+
+function renderReformSources() {
+  const ctx = reformContext;
+  const srcHtml = ctx.sources.map(p =>
+    '<li>' + p.map((part, i) =>
+      `<span${i === p.length - 1 ? ' class="src-leaf"' : ''}>${esc(part)}</span>`
+    ).join('<span class="src-arrow"> › </span>') + '</li>').join('');
+  $('reform-sources').innerHTML =
+    `<div class="result-block"><h3>过敏原「${esc(ctx.allergen)}」的全部来源路径
+       <span class="pill red">${ctx.sources.length} 条</span></h3>
+     <p class="hint">记录 #${ctx.review.id} ${esc(ctx.review.name)}（核对对象：${esc(ctx.review.source_version)}）；
+       路径终点为自身标注该过敏原的原料，同名原料在不同分支的路径分别保留。</p>
+     <ul class="src-paths">${srcHtml}</ul></div>`;
+  $('reform-costs-wrap').classList.remove('hidden');
+  $('reform-costs').innerHTML = ctx.candidate_nodes.map(n => {
+    const k = pathKey(n.path);
+    const v = reformCosts[k] !== undefined ? reformCosts[k] : '';
+    const own = n.has_own
+      ? ' <span class="badge miss" title="该节点自身标注目标过敏原，必须在其祖先或自身处阻断">来源节点</span>'
+      : ' <span class="badge" title="仅作为祖先阻断子树来源">祖先节点</span>';
+    const pathText = n.path.map((part, i) =>
+      `<span${i === n.path.length - 1 ? ' class="src-leaf"' : ''}>${esc(part)}</span>`
+    ).join('<span class="src-arrow">›</span>');
+    return `<label style="justify-content:flex-start"><span style="flex:1">${pathText}${own}</span>
+      <input type="number" min="0" step="any" value="${esc(String(v))}" data-path="${esc(k)}"
+        placeholder="不可替换"></label>`;
+  }).join('');
+}
+
+function captureReformCosts() {
+  document.querySelectorAll('#reform-costs input').forEach(i => {
+    reformCosts[i.dataset.path] = i.value;
+  });
+}
+
+async function submitReformulation() {
+  $('reform-msg').textContent = '';
+  $('reform-result').innerHTML = '';
+  captureReformCosts();
+  const ctx = reformContext;
+  if (!ctx) {
+    $('reform-msg').textContent = '请先选择记录与目标过敏原并列出全部来源路径';
+    return;
+  }
+  const costs = [];
+  for (const n of ctx.candidate_nodes) {
+    const raw = (reformCosts[pathKey(n.path)] || '').trim();
+    if (!raw) continue;
+    const v = Number(raw);
+    if (!isFinite(v) || v < 0) {
+      $('reform-msg').textContent = `节点「${pathKey(n.path)}」的成本无效（需为不小于 0 的数字）`;
+      return;
+    }
+    costs.push({path: n.path, cost: v});
+  }
+  try {
+    const r = await post('/api/reformulation-plan-preview', {
+      review_id: ctx.review.id, allergen: ctx.allergen, costs});
+    renderReformResult(r);
+  } catch (e) {
+    $('reform-msg').textContent = e.message;
+  }
+}
+
+function renderReformResult(r) {
+  if (!r.feasible) {
+    const rows = r.uncoverable_sources.map(p =>
+      `<li>${p.map(part => `<span class="src-leaf">${esc(part)}</span>`)
+        .join('<span class="src-arrow"> › </span>')}</li>`).join('');
+    $('reform-result').innerHTML = `<div class="result-block">
+      <h3>不存在可行改配方案 <span class="pill red">${r.uncoverable_sources.length} 条来源不可覆盖</span></h3>
+      <p class="error">以下来源路径上（含自身）没有任何填写了成本的可替换节点，
+        请为路径上的至少一个节点补充改配成本后重试：</p>
+      <ul class="src-paths">${rows}</ul></div>`;
+    $('reform-result').scrollIntoView({behavior: 'smooth'});
+    return;
+  }
+  const tie = r.optimal_count > 1
+    ? `<p class="hint">共有 ${r.optimal_count} 个总成本相同的并列最优方案，
+        已按所选节点路径序列字典序展示最小者。</p>`
+    : '<p class="hint">最低成本方案唯一。</p>';
+  const rows = r.selected.map((s, i) => {
+    const node = s.path.map((part, j) =>
+      `<span${j === s.path.length - 1 ? ' class="src-leaf"' : ''}>${esc(part)}</span>`
+    ).join('<span class="src-arrow"> › </span>');
+    const blocked = s.blocked_sources.map(p =>
+      '<li>' + p.map(part => esc(part)).join('<span class="src-arrow"> › </span>') + '</li>'
+    ).join('');
+    return `<tr><td>${i + 1}</td><td>${node}</td><td>${s.cost}</td>
+      <td>${s.blocked_sources.length} 条<ul class="src-paths">${blocked}</ul></td></tr>`;
+  }).join('');
+  $('reform-result').innerHTML = `<div class="result-block">
+    <h3>最小改配方案 <span class="pill green">总成本 ${r.total_cost}</span>
+      <span class="pill blue">${r.selected.length} 个节点</span></h3>
+    ${tie}
+    <table><tr><th style="width:3em">#</th><th>所选替换节点（完整路径）</th>
+      <th style="width:7em">成本</th><th>阻断的来源路径</th></tr>${rows}</table>
+    <p class="hint">选择祖先节点即同时阻断其子树内全部来源，故所选节点互不为祖先 / 后代；
+      未填写成本的节点均按不可替换处理。本结果仅为预览，未改写任何审查记录。</p></div>`;
+  $('reform-result').scrollIntoView({behavior: 'smooth'});
 }
 
 /* ---------- 示例 ---------- */

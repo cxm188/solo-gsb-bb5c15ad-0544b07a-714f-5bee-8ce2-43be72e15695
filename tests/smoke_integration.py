@@ -384,4 +384,101 @@ assert db.get_review(rid_alias)["needs_recheck"] is True
 assert len(db.list_reviews()) == 3
 print("10. 共用标签模板分组（候选资格/并集模板/附加声明上限/子集DP/并列/禁止参与/只读） OK")
 
+# 11. 目标过敏原最小改配方案（临时预览，不改写审查记录）
+from app.reformulation import (ReformulationError, build_reformulation_preview,
+                               get_source_context, list_reformulation_records)
+
+# 11a. 候选清单：rid_alias 需复核禁止使用；两版记录取 B（新版）配方树
+reform_recs = {r["id"]: r for r in list_reformulation_records()}
+assert reform_recs[rid_alias]["eligible"] is False
+assert "需复核" in reform_recs[rid_alias]["blocked_reason"]
+assert reform_recs[rid]["eligible"] and reform_recs[rid]["source_version"] == "新版配方"
+
+# 11b. 复用当前配方树（两版取 B）列目标过敏原全部来源路径与候选节点
+ctx = get_source_context(rid, "坚果")
+assert ctx["sources"] == [["巧克力酱", "椰子粉"]]
+assert {tuple(n["path"]) for n in ctx["candidate_nodes"]} == {
+    ("巧克力酱",), ("巧克力酱", "椰子粉")}
+# B 版无乳 → 乳无来源，拒绝
+try:
+    get_source_context(rid, "乳")
+    raise AssertionError("B 版无乳来源时应拒绝")
+except ReformulationError:
+    pass
+
+# 11c. 树形 DP：祖先阻断子树；并列按节点路径序列字典序取最小并统计并列数
+text_r = "巧克力酱（可可脂，奶粉（乳清粉，乳糖））"
+result_r, fp_r = analyze(text_a=text_r, text_b=None, label_a="现版配方",
+                         label_b="新版配方", declared=[])
+rid_r = db.create_review(
+    name="乳来源记录", declared=[], text_a=text_r, text_b=None,
+    label_a="现版配方", label_b="新版配方", result=result_r,
+    dict_fingerprint=fp_r)
+ctx = get_source_context(rid_r, "乳")
+# 冒烟字典中奶粉自身也标注乳 → 三条来源（奶粉、乳清粉、乳糖）
+assert ctx["sources"] == [
+    ["巧克力酱", "奶粉"],
+    ["巧克力酱", "奶粉", "乳清粉"],
+    ["巧克力酱", "奶粉", "乳糖"]]
+costs = [
+    {"path": ["巧克力酱"], "cost": 10},
+    {"path": ["巧克力酱", "奶粉"], "cost": 3},
+    {"path": ["巧克力酱", "奶粉", "乳清粉"], "cost": 1},
+    {"path": ["巧克力酱", "奶粉", "乳糖"], "cost": 1},
+]
+# 奶粉自身是来源：不选奶粉时两条叶子报价无法覆盖「奶粉」来源 → 最低必选奶粉
+plan = build_reformulation_preview(rid_r, "乳", costs)
+assert plan["feasible"] and plan["total_cost"] == 3
+assert [s["path"] for s in plan["selected"]] == [["巧克力酱", "奶粉"]]
+assert plan["selected"][0]["blocked_sources"] == ctx["sources"]
+# 巧克力酱降到 3 → 与奶粉并列：(巧克力酱) 路径序列字典序更小，并列数 2
+costs[0]["cost"] = 3
+plan = build_reformulation_preview(rid_r, "乳", costs)
+assert plan["total_cost"] == 3 and plan["optimal_count"] == 2
+assert [s["path"] for s in plan["selected"]] == [["巧克力酱"]]
+
+# 11d. 无解：奶粉自身是来源，只给叶子报价时奶粉来源不可覆盖
+plan = build_reformulation_preview(
+    rid_r, "乳", [{"path": ["巧克力酱", "奶粉", "乳清粉"], "cost": 1},
+                  {"path": ["巧克力酱", "奶粉", "乳糖"], "cost": 1}])
+assert plan["feasible"] is False and plan["total_cost"] is None
+assert plan["uncoverable_sources"] == [["巧克力酱", "奶粉"]]
+# 全部不报价：三条来源均不可覆盖
+plan = build_reformulation_preview(rid_r, "乳", [])
+assert plan["feasible"] is False
+assert len(plan["uncoverable_sources"]) == 3
+
+# 11e. 成本 / 路径校验：负数、路径不在来源树上均拒绝
+try:
+    build_reformulation_preview(
+        rid_r, "乳", [{"path": ["巧克力酱"], "cost": -1}])
+    raise AssertionError("负成本应被拒绝")
+except ReformulationError:
+    pass
+try:
+    build_reformulation_preview(
+        rid_r, "乳", [{"path": ["可可脂"], "cost": 1}])
+    raise AssertionError("非来源路径上的节点应被拒绝")
+except ReformulationError:
+    pass
+
+# 11f. 缺失 / 需复核记录禁止使用
+try:
+    get_source_context(rid_alias, "乳")
+    raise AssertionError("需复核记录应被拒绝")
+except ReformulationError as exc:
+    assert exc.problems and exc.problems[0]["reason"] == "stale"
+try:
+    get_source_context(999999, "乳")
+    raise AssertionError("缺失记录应被拒绝")
+except ReformulationError as exc:
+    assert exc.problems[0]["reason"] == "missing"
+
+# 11g. 只读：记录内容与时效状态不变，不产生新记录
+assert db.get_review(rid) == before
+assert db.get_review(rid_r)["needs_recheck"] is False
+assert len(db.list_reviews()) == 4
+print("11. 目标过敏原最小改配方案（两版取B/来源路径/树形DP/祖先阻断/并列/无解/禁止使用/只读） OK")
+
+
 print("\n全部集成冒烟测试通过 ✔")
