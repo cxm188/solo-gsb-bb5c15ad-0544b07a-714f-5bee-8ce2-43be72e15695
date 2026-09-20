@@ -384,4 +384,106 @@ assert db.get_review(rid_alias)["needs_recheck"] is True
 assert len(db.list_reviews()) == 3
 print("10. 共用标签模板分组（候选资格/并集模板/附加声明上限/子集DP/并列/禁止参与/只读） OK")
 
+# 11. 目标过敏原最小改配方案（临时预览，不改写审查记录）
+from app.reformulation import (ReformulationError, build_reformulation_plan,
+                               get_reformulation_sources,
+                               list_reformulation_records)
+
+# 先恢复 8d 被改写成需复核的别名记录（脱盐乳清 -> 乳清粉），供乳来源场景使用
+db.bulk_upsert_aliases(
+    validate_alias_batch("脱盐乳清：乳清粉", db.alias_existing())["entries"])
+assert db.get_review(rid_alias)["needs_recheck"] is False
+# 另建一条带「自身标注 + 子配料传播」三层乳来源的时效正常记录
+milk_result, milk_fp = analyze(
+    text_a="配料表：巧克力酱（可可脂，奶粉（乳清粉，乳糖））",
+    text_b=None, label_a="现版配方", label_b="新版配方", declared=[])
+milk_text = "配料表：巧克力酱（可可脂，奶粉（乳清粉，乳糖））"
+milk_rid = db.create_review(
+    name="乳改配", declared=[], text_a=milk_text, text_b=None,
+    label_a="现版配方", label_b="新版配方",
+    result=milk_result, dict_fingerprint=milk_fp)
+
+# 11a. 候选记录清单：复用当前配方（两版取 B）；rid 的 B 版无乳
+recs = {r["id"]: r for r in list_reformulation_records()}
+assert recs[rid]["eligible"] and recs[old_rid]["eligible"]
+assert recs[rid]["source_version"] == "新版配方"
+assert "坚果" in recs[rid]["allergens"] and "乳" not in recs[rid]["allergens"]
+assert recs[milk_rid]["eligible"]
+
+# 11b. 乳来源为 巧克力酱›奶粉 及其两个叶子（自身标注 + 子配料传播各计一条）
+src = get_reformulation_sources(milk_rid, "乳")
+assert src["sources"] == [
+    ["巧克力酱", "奶粉"],
+    ["巧克力酱", "奶粉", "乳清粉"],
+    ["巧克力酱", "奶粉", "乳糖"],
+]
+candidate_keys = {tuple(n["path"]) for n in src["candidate_nodes"]}
+assert ("巧克力酱",) in candidate_keys and ("巧克力酱", "奶粉") in candidate_keys
+
+# 11c. 树形 DP：选祖先奶粉（100）阻断全部 3 条，优于两叶子各 60（120）
+before = db.get_review(milk_rid)
+plan = build_reformulation_plan(milk_rid, "乳", [
+    {"path": ["巧克力酱", "奶粉"], "cost": 100},
+    {"path": ["巧克力酱", "奶粉", "乳清粉"], "cost": 60},
+    {"path": ["巧克力酱", "奶粉", "乳糖"], "cost": 60},
+])
+assert plan["feasible"] and plan["total_cost"] == 100
+assert [s["path"] for s in plan["selections"]] == [["巧克力酱", "奶粉"]]
+assert plan["selections"][0]["blocked_count"] == 3
+
+# 11d. 奶粉自身是来源：只填叶子成本无法阻断「巧克力酱›奶粉」→ 无解
+plan = build_reformulation_plan(milk_rid, "乳", [
+    {"path": ["巧克力酱", "奶粉", "乳清粉"], "cost": 1},
+    {"path": ["巧克力酱", "奶粉", "乳糖"], "cost": 1},
+])
+assert not plan["feasible"]
+assert plan["uncoverable_sources"] == [["巧克力酱", "奶粉"]]
+
+# 11e. 并列：顶层祖先巧克力酱 120 与 奶粉 120 同价（均阻断全部 3 条），
+#      字典序取更靠上的巧克力酱；只替换叶子因奶粉自身是来源而不可行
+plan = build_reformulation_plan(milk_rid, "乳", [
+    {"path": ["巧克力酱"], "cost": 120},
+    {"path": ["巧克力酱", "奶粉"], "cost": 120},
+    {"path": ["巧克力酱", "奶粉", "乳清粉"], "cost": 1},
+    {"path": ["巧克力酱", "奶粉", "乳糖"], "cost": 1},
+])
+assert plan["feasible"] and plan["total_cost"] == 120 and plan["optimal_count"] == 2
+assert [s["path"] for s in plan["selections"]] == [["巧克力酱"]]
+
+# 11f. 精确有理数：用字符串小数传入 0.3 与 0.3 判并列（Fraction(str) 精确化）
+plan = build_reformulation_plan(milk_rid, "乳", [
+    {"path": ["巧克力酱"], "cost": "0.3"},
+    {"path": ["巧克力酱", "奶粉"], "cost": "0.3"},
+])
+assert plan["feasible"] and plan["total_cost"] == 0.3 and plan["optimal_count"] == 2
+
+# 11g. 需复核 / 缺失 / 非法过敏原 / 非法路径均拒绝
+db.upsert_entry("椰子粉", ["坚果", "大豆", "芝麻"])  # 制造 stale（rid/old_rid 涉及椰子粉）
+try:
+    get_reformulation_sources(rid, "坚果")
+    raise AssertionError("需复核记录应被拒绝")
+except ReformulationError as exc:
+    assert exc.problems[0]["reason"] == "stale"
+try:
+    build_reformulation_plan(999999, "乳", [])
+    raise AssertionError("缺失记录应被拒绝")
+except ReformulationError as exc:
+    assert exc.problems[0]["reason"] == "missing"
+try:
+    get_reformulation_sources(milk_rid, "不存在的过敏原")
+    raise AssertionError("非配方过敏原应被拒绝")
+except ReformulationError:
+    pass
+try:
+    build_reformulation_plan(milk_rid, "乳",
+                             [{"path": ["巧克力酱", "可可脂"], "cost": 1}])
+    raise AssertionError("非来源路径应被拒绝")
+except ReformulationError:
+    pass
+
+# 11h. 只读：记录内容、指纹与记录数均不变
+assert db.get_review(milk_rid) == before
+assert len(db.list_reviews()) == 4
+print("11. 目标过敏原最小改配方案（当前配方/来源路径/树形DP/祖先阻断/并列/无解/禁止选择/只读） OK")
+
 print("\n全部集成冒烟测试通过 ✔")
